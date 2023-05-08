@@ -1,304 +1,131 @@
+import plotly.express as px
 import pandas as pd
-from geotext import GeoText
 import numpy as np
-import re
+from dash import Dash, html, dcc, Input, Output, dash_table, State
+import dash_bootstrap_components as dbc
 
-df1 = pd.read_csv("https://github.com/datenlabor01/geodaten/blob/main/2018.csv?raw=true")
-df2 = pd.read_csv("https://github.com/datenlabor01/geodaten/blob/main/2019.csv?raw=true")
-df3 = pd.read_csv("https://github.com/datenlabor01/geodaten/blob/main/2020.csv?raw=true")
-df = pd.concat([df1, df2, df3])
-df = df.reset_index()
-df = df[["Recipient Name", "Long Description", "Value", "YEAR"]]
+#df_data = pd.read_csv("geo_data_sec.csv")
+df_data = pd.read_csv("https://github.com/datenlabor01/geodaten/blob/main/geo_data_found.csv?raw=true")
+app = Dash(external_stylesheets = [dbc.themes.LUX])
 
-#Delete entries with empty long description:
-df.dropna(subset=['Long Description'], inplace=True)
+#Set-up dynamic elements:
+#Dropdown for Year, Value and Donor Agency: 
+year_dropdown = dcc.Dropdown(options=sorted(df_data["Year"].unique()),
+                             value='All', style={"textAlign": "center"}, clearable=False, multi=True, placeholder='Alle Jahre')
 
-#Delete words that would result in false positives:
-string = ["Metro", "University", "Of", "Police", "Federal", "Baden", "Alliance", "Union", "Best",
-          "Young", "Green", "Enterprise", "Central", "Asia", "Mobile", "Liberty", "Corona"]
-pat = r'\b(?:{})\b'.format('|'.join(string))
-df["Long Description"] = df["Long Description"].str.replace(pat, '', regex = True)
+value_slider = dcc.Slider(min = 0, max = 10, step=None, value = 0, 
+                        marks={0: 'All Projects', 
+                               2: "> 2 Mio. USD",
+                               5: "> 5 Mio. USD",
+                               10: "> 10 Mio. USD"})
 
-#Get cities via geotext and store in new column "City":
-cities = df['Long Description'].apply(lambda x: GeoText(x).cities)
-df["City"] = cities.str[0]
+donor_dropdown = dcc.Dropdown(options=sorted(df_data["Ressort"].unique()), value ="All", 
+                                              style={"textAlign": "center"}, clearable=False, multi=True, placeholder='Alle Melder')
 
-#Align recipient names to allow matches for geo-API:
-df.loc[df["Recipient Name"] == "Türkiye", "Recipient Name"] = "Turkey"
-df.loc[df["Recipient Name"] == "Viet Nam", "Recipient Name"] = "Vietnam"
-df.loc[df["Recipient Name"] == "China (People's Republic of)", "Recipient Name"] = "China"
-df.loc[df["Recipient Name"] == "West Bank and Gaza Strip", "Recipient Name"] = "Palestinian Territory"
-df.loc[df["Recipient Name"] == "Lao People's Democratic Republic", "Recipient Name"] = "Laos"
-df.loc[df["Recipient Name"] == "Timor-Leste", "Recipient Name"] = "East Timor"
+#Prepare for map-visualization by removing empty elements and converting coordinates to integers:
+df_data.loc[df_data["Location"] == "Kurdistan", "Lat"] = np.nan
+df_data.loc[df_data["Location"] == "Kurdish region", "Lat"] = np.nan
+df_data.loc[df_data["Location"] == "Africa", "Lat"] = np.nan
+df_data = df_data[(df_data["Lat"].isna() == False) & (df_data["Lat"] != "not found")]
+df_data["Lat"] = df_data.Lat.astype(float)
+df_data["Lon"] = df_data.Lon.astype(float)
 
-## To get all cities and not only first occurence:
+text2 = "Diese Anwendung wird als Prototyp vom BMZ Datenlabor angeboten. Sie kann Fehler enthalten und ist als alleinige Entscheidungsgrundlage nicht geeignet. Außerdem können Prototypen ausfallen oder kurzfristig von uns verändert werden. Sichern Sie daher wichtige Ergebnisse per Screenshot oder Export. Die Anwendung ist vorerst intern und sollte daher nicht ohne Freigabe geteilt werden. Wenden Sie sich bei Fragen gerne an datenlabor@bmz.bund.de"
 
-#Get all cities and prepare new column:
-#First pass whole sentence into code:
-cit = cities[cities.str[0].isnull() == False].str[0:]
-df["all_cities"] = ""
-#Delete rows where cities are found and store in new dataframe:
-df_reduced = df.drop(cit.index)
+app.layout = dbc.Container([
+      dbc.Row([
+         html.H1(children='Geodaten Visualisierung', style={'textAlign': 'center'}),
+         html.P(children = "Das ist ein Prototyp, der Fehler enthalten kann. Die Karte stellt Orte dar, die in der Projektbeschreibung in den ODA/IATI-Daten erwähnt werden und nach Auszahlungsbetrag angezeigt werden.",
+         style={'textAlign': 'center'}),
+      ]),
+      #App button:
+      dbc.Row([
+         dbc.Button(children = "Über diese App", id = "textbutton", color = "light", className = "me-1",
+                    n_clicks=0, style={'textAlign': 'center', "width": "30rem"})
+      ], justify = "center"),
+      dbc.Row([
+            dbc.Collapse(dbc.Card(dbc.CardBody([
+               dbc.Badge(text2, className="text-wrap"),
+               ])), id="collapse", style={'textAlign': 'center', "width": "60rem"}, is_open=False),
+      ], justify = "center"),
+      #Dynamic elements:
+      dbc.Row([
+        dbc.Col([year_dropdown, html.Br(), donor_dropdown, html.Br(), 
+                 value_slider, html.Br(),
+         ], width = 8),
+      ],justify = "center"),
 
-#Break nested list and store all cities in one cell separated by comma:
-for a in enumerate(cit.index):
-  a= a[1]
-  df.loc[a, "all_cities"] = cit[a][0]
-  for b in range(1, len(cit[a])):
-    df.loc[a, "all_cities"] = df.loc[a, "all_cities"] + "," + cit[a][b]
+      dbc.Row([
+         dbc.Badge(id = "text", className="text-wrap"),
+         dcc.Graph(id='map', style={'textAlign': 'center'}),
+      ]),
+      #Data Table:
+      dbc.Row([
+         my_table := dash_table.DataTable(
+         df_data.to_dict('records'), [{"name": i, "id": i} for i in df_data.columns[4:]],
+         filter_action="native", sort_action="native", page_size= 25,
+         style_cell={'textAlign': 'left', "whiteSpace": "normal", "height": "auto"},
+         style_header={'backgroundColor': 'rgb(11, 148, 153)', 'color': 'black', 'fontWeight': 'bold'},
+             style_data_conditional=[{
+            'if': {'row_index': 'odd'},
+            'backgroundColor': 'rgb(235, 240, 240)',
+        }], export_format= "xlsx"),
+         ]),
+])
 
-#create new dataframe and store each city in one separate column:
-df_cities = df[df.all_cities != ""].all_cities.str.split(',', expand=True)
-#Add recipients to dataframe:
-df_cities = df_cities.join(df[df.all_cities != ""]["Recipient Name"])
+#Button to display text:
+@app.callback(
+    Output("collapse", "is_open"),
+    [Input("textbutton", "n_clicks")],
+    [State("collapse", "is_open")],
+)
 
-#Delete all numeric and special characters
-df_reduced = df_reduced["Long Description"].replace(r'[^A-Za-z]+', ' ', regex=True)
-#Delete all lowercase words:  
-df_reduced = df_reduced.str.replace(r'\b[a-z]+\s*', '', regex=True)
-#Split words into columns based on spaces:
-dat_split = df_reduced[df_reduced.notnull()].str.split(' ', expand=True)
-#Replace empty cells with nan and delete rows that only have nan:
-dat_split = dat_split.replace(r'^\s*$', np.nan, regex=True)
-dat_split = dat_split.drop(dat_split[dat_split.loc[:, dat_split.columns].isnull().all(1) == True].index)
-#Delete columns with only nans:
-dat_split = dat_split.dropna(axis=1, how='all')
-dat_split["City"] = np.nan
+def collapse(n, is_open):
+   if n:
+      return not is_open
+   return is_open
 
-df_temp = pd.DataFrame(index = dat_split.index)
-#Apply geotext over all columns and delete falsely assigned cities with string:
-for a in dat_split.columns[:-1]:
-  list_slice = dat_split[a]
-  list_slice = list_slice[list_slice.isnull() == False].apply(lambda x: GeoText(x).cities)
-  list_slice = list_slice.str[0]
-  df_temp[a] = np.nan
-  df_temp[a].update(list_slice[list_slice.isnull() == False])
-#Delete rows and columns with only nan:
-df_temp = df_temp.drop(df_temp[df_temp.loc[:, df_temp.columns].isnull().all(1) == True].index)
-df_temp = df_temp.dropna(axis=1, how='all')
+@app.callback(
+    [Output('map', 'figure'), Output(my_table, "data"), Output("text", "children")],
+    [Input(year_dropdown, 'value'), Input(donor_dropdown, 'value'), Input(value_slider, 'value')]
+)
 
-#Collapse all entries into column, delete nans and only keep cities:
-df_temp = df_temp.astype(str).agg(','.join, axis=1)
-df_temp = df_temp.replace(r'nan', ' ', regex=True)
-df_temp = df_temp.replace(r'[^A-Za-z]+', ' ', regex=True)
-#Create new dataframe and rename it to cities:
-df_temp = pd.DataFrame(df_temp)
-df_temp = df_temp.rename(columns={0:"Cities"})
-#Delete whitespaces and extend all cities into different columns:
-df_temp["Cities"] = df_temp["Cities"].str.strip()
-df_temp = df_temp.Cities.str.split(' ', expand=True)
-df_temp = pd.concat([df_temp, df["Recipient Name"].loc[df_temp.index]], axis = 1)
+def update_map(selected_year, donor_dropdown, value_slider):
 
-#Merge first and second dataframe and split it up row-wise:
-df_cities = pd.concat([df_cities, df_temp], axis = 0)
-#Create new dataframe with all columns row-wise:
-df_cities = df_cities.rename(columns={0:"Cities"})
-data_cities = df_cities.iloc[:,[0,-1]]
-for a in range(1, len(df_cities.columns)-1):
-  #Align column names to allow concat and add columns as rows:
-  df_cities = df_cities.rename(columns={a:"Cities"})
-  data_cities = pd.concat([data_cities, df_cities.iloc[:,[a,-1]]], axis = 0)
-#Delete empty rows:
-data_cities = data_cities.dropna()
+   if (selected_year == "All") | (selected_year == []):
+      dat_fil = df_data
+   else:
+      dat_fil = df_data[df_data["Year"].isin(selected_year)]
+   if (donor_dropdown == "All") | (donor_dropdown == []):
+      dat_fil = dat_fil
+   else:
+      dat_fil = dat_fil[dat_fil["Ressort"].isin(donor_dropdown)]
+   if value_slider == 0:
+      dat_fil = dat_fil
+   else:
+      dat_fil = dat_fil[dat_fil["Value"] > value_slider]
+   
+   if dat_fil.empty == False:
+      df_map = dat_fil.groupby(["Location", "Lat", "Lon", "Country", "duplicate_project"])["Value"].sum().reset_index()
+      figMap = px.scatter_mapbox(df_map, lat="Lat", lon="Lon", 
+                        hover_name="Location", hover_data=["Location", "Country", "duplicate_project"],
+                        color="Value", color_continuous_scale="Viridis",
+                        range_color=(min(df_map["Value"]), max(df_map["Value"]*0.05)),
+                        zoom = 2)
+      text = "" 
+   else:
+      #Display empty empty when dataframe is empty due to user selection:
+      dat = pd.DataFrame(index=[0])
+      dat["Lat"] = 0
+      dat["Lon"] = 0
+      dat["Value"] = 0
+      figMap = px.scatter_mapbox(dat, "Lat", "Lon", size = "Value", zoom = 2)
+      text = "No data points for selected options."
 
-#Get split-up words without assigned city:
-df_words = dat_split.drop(df_temp.index)
-#For speeding: Delete words which are in English dictionary
-#first convert them to lowercase, change plurals to singular and lemmatize verbs
-#check then if contained in corpus
-import inflect
-from nltk.corpus import words
-from nltk.stem.wordnet import WordNetLemmatizer
-import nltk
-nltk.download('wordnet')
-nltk.download('omw-1.4')
-nltk.download('words')
+   figMap.update_layout(mapbox_style="carto-positron")
+   figMap.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+   
+   return figMap, dat_fil.to_dict("records"), text
 
-p = inflect.engine()
-set_words = set(words.words())
-
-for a in df_words.columns[:-1]:
-  list_slice = df_words[a]
-  #Make words lowercase:
-  list_slice = list_slice[list_slice.isnull() == False].str.lower()
-  #Convert from plural to singular:
-  indices = list_slice[list_slice.isnull() == False].apply(lambda x: p.singular_noun(x))
-  list_slice.update(indices[indices != False])
-  #Convert verbs to their infinitive form:
-  list_slice = list_slice[list_slice.isnull() == False].apply(lambda x: WordNetLemmatizer().lemmatize(x,'v'))
-  #Check if cell is contained in corpus "words" and get indices (values are True if contained and False otherwise)
-  indices = list_slice[(list_slice.isnull() == False) & (list_slice != False)].apply(lambda x: x in set_words)
-  #Replace cells if in corpus with nan in df_words:
-  df_words.loc[indices[indices != False].index, a] = np.nan
-
-#Delete recipient names in cells:
-df_words = df_words.replace(df["Recipient Name"].unique(), np.nan, regex=True)
-#Delete most common words, threshold is 70:
-counter = df_words.stack().value_counts().reset_index()
-words = counter.loc[counter[0] > 70, "index"]
-pat = r'\b(?:{})\b'.format('|'.join(words))
-df_words = df_words.replace(pat, np.nan, regex = True)
-#Delete other common words that would be false results:
-df_words = df_words.replace("Bavaria", np.nan, regex = True)
-df_words = df_words.replace("Maroccan", np.nan, regex = True)
-df_words = df_words.replace("Moroccan", np.nan, regex = True)
-df_words = df_words.replace("Wuerttemberg", np.nan, regex = True)
-df_words = df_words.replace("Herzegovina", np.nan, regex = True)
-df_words = df_words.replace("Bavaria", np.nan, regex = True)
-df_words = df_words.replace("Palestinians", np.nan, regex = True)
-
-#Collapse entries into one column
-df_words = df_words.astype(str).agg(','.join, axis=1)
-df_words = df_words.replace(r'nan', '', regex=True)
-df_words = df_words.replace(r'None', '', regex=True)
-df_words = df_words.replace(r'[A-Z]+(?![a-z])', '', regex=True)
-df_words = df_words.replace(r'[^A-Za-z]+', ' ', regex=True)
-df_words = df_words.str.strip()
-df_words = df_words.str.split(' ', expand=True)
-df_words = df_words.replace("", np.nan, regex=True)
-
-#Delete rows and columns that only have nan:
-df_words = df_words.drop(df_words[df_words.loc[:, df_words.columns].isnull().all(1) == True].index)
-df_words = df_words.dropna(axis=1, how='all')
-
-#Add recipients based on index:
-df_words = df_words.join(df["Recipient Name"])
-#Re-add empty column for cities:
-df_words.loc[:, "City"] = np.nan
-
-import numpy
-import wikipedia
-from collections import Counter
-
-string_eng = [" city ", " suburb ", " township", " town", " village ", 
-              " province", " region" , " island ", " governorate ",
-              "is a state", " states", " state in",
-              " capital of", "district", "Federal Member State"]
-pat = r'\b(?:{})\b'.format('|'.join(string_eng))
-
-#Apply algorithm:
-#Get through df row-wise and input every column in wikipedia to get summary
-for a in enumerate(df_words.index):
-  a = a[1]
-  if (pd.isna(df_words["City"][a]) == True):
-  #Iterate only when no city-name was assigned in row:
-  #Go through all columns except last two:
-    for b in df_words.columns[:-2]:
-      #Check if cell is empty and column "City" in the row 
-      if pd.isnull(df_words[b][a]) == False:
-        if (pd.isna(df_words["City"][a]) == True):
-          try:
-            #If recipient is not country, use only cell as search string:
-            if "," in df_words.loc[a, "Recipient Name"]:
-              phrase = wikipedia.summary(df_words[b][a], sentences=1)
-            #If recipient is country use its name with cell as search string:
-            else:
-              phrase = wikipedia.summary(df_words[b][a]+df_words["Recipient Name"][a], sentences=1)
-              if len(phrase) > 0:
-                string_split = phrase.split(None, 1)
-              if (string_split[0] == "Al") | ((string_split[0] == "El")):
-                string_split = phrase.split(None, 2)
-                first_word = string_split[1]
-              else:
-                first_word = string_split[0]
-              common_letters = Counter(df_words[b][a]) & Counter(first_word)
-              #Match only if common characters between searchstring and first word of phrase are over 60%
-              if (re.search(pat, phrase)):
-                if ((sum(common_letters.values())/len(df_words[b][a])) > 0.6):
-                  df_words.loc[(df_words[b] == df_words[b][a]) & (df_words["Recipient Name"] == df_words["Recipient Name"][a]), "City"] = df_words[b][a]
-                  break
-          #use exceptions if searchresult from wikipedia are more than one page or non-existant
-          except wikipedia.exceptions.DisambiguationError as e:
-            df_words.loc[a, "City"] = np.nan
-          except wikipedia.exceptions.PageError as e:
-            df_words.loc[a, "City"] = np.nan
-
-
-
-"," in data_cities.loc[45, "Recipient Name"]
-
-data_back = data_cities
-#Update city dataframe with new entries for column City:
-df_temp = pd.DataFrame(index = df_words[df_words.City.isnull() == False].index)
-df_temp["Cities"] = df_words.City[df_words.City.isnull() == False]
-df_temp["Recipient Name"] = df_words[df_words.City.isnull() == False]["Recipient Name"]
-data_cities = pd.concat([data_cities, df_temp], axis = 0)
-data_cities = data_cities.reset_index()
-data_cities["Lat"] = np.nan
-data_cities["Lon"] = np.nan
-
-from geopy.geocoders import Nominatim
-from geopy.extra.rate_limiter import RateLimiter
-
-#Creating an instance of Nominatim Class
-geolocator = Nominatim(user_agent="my_request") 
-#applying the rate limiter wrapper
-geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
-
-#Prepare search string for projects without country recipient:
-string_countries = data_cities[~data_cities["Recipient Name"].str.contains(",")]["Recipient Name"].unique()
-pat = r'\b(?:{})\b'.format('|'.join(string_countries))
-
-for a in enumerate(data_cities.index):
-  a = a[1]
-  if pd.isna(data_cities.loc[a, "Lat"]) == True:
-    try:
-      loc = geolocator.geocode(data_cities.loc[a, "Cities"], language = "en", exactly_one = False)
-      for b in range(0, len(loc)):
-        #For projects without country recipient check only whether developing country is in result:
-        if ("," in data_cities.loc[a, "Recipient Name"]) & (loc[b][0] in pat):
-          data_cities.loc[(data_cities.loc[a, "Cities"] == data_cities.Cities) & (data_cities.loc[a, "Recipient Name"] == data_cities["Recipient Name"]), "Lat"] = loc[b].latitude
-          data_cities.loc[(data_cities.loc[a, "Cities"] == data_cities.Cities) & (data_cities.loc[a, "Recipient Name"] == data_cities["Recipient Name"]), "Lon"] = loc[b].longitude
-          print(a)
-          break
-        #Check if recipient country is in string for projects with country recipients:
-        if (data_cities.loc[a, "Recipient Name"] in loc[b][0]) & ("," not in data_cities.loc[a, "Recipient Name"]):
-          data_cities.loc[(data_cities.loc[a, "Cities"] == data_cities.Cities) & (data_cities.loc[a, "Recipient Name"] == data_cities["Recipient Name"]), "Lat"] = loc[b].latitude
-          data_cities.loc[(data_cities.loc[a, "Cities"] == data_cities.Cities) & (data_cities.loc[a, "Recipient Name"] == data_cities["Recipient Name"]), "Lon"] = loc[b].longitude
-          print(a)
-          break
-    except:
-        data_cities.loc[a, "Lat"] = np.nan
-        data_cities.loc[a, "Lon"] = np.nan
-
-data_cities["Long Description"] = np.nan
-data_cities["Value"] = np.nan
-data_cities["YEAR"] = np.nan
-#Get above columns for new dataframe:
-for a in enumerate(data_cities.index):
-  a = a[1]
-  data_cities.loc[a, "Long Description"] = df.loc[data_cities.loc[a, "index"], "Long Description"]
-  data_cities.loc[a, "Value"] = df.loc[data_cities.loc[a, "index"], "Value"]
-  data_cities.loc[a, "YEAR"] = df.loc[data_cities.loc[a, "index"], "YEAR"]
-
-#Get marker for all duplicate projects for visualization:
-data_cities["duplicate_project"] = "no"
-data_cities.loc[data_cities[data_cities["index"].duplicated(keep=False) == True].index, "duplicate_project"] = "yes"
-
-#For visualization: Add cities and coordinates in original dataframe to show
-#how many cities where found/found but are without coordinates:
-df["Lat"] = np.nan
-df["Lon"] = np.nan
-df["Cat_coord"] = np.nan
-df_temp = data_cities
-df_temp["City"] = df_temp["Cities"]
-df_temp = df_temp.reset_index()
-#Get projects without duplicates and only first duplicate:
-df_temp = df_temp[~df_temp["index"].duplicated(keep='first')]
-#Set index column to index and assign values to original dataframe:
-df_temp.set_index('index', inplace=True)
-df.update(df_temp["Lat"])
-df.update(df_temp["Lon"])
-df.update(df_temp["Cat_coord"])
-df.update(df_temp["City"])
-
-#Add categories for visualization:
-df["Cat_coord"] = np.nan
-df.loc[df["Lat"].isna() == False, "Cat_coord"] = "Areas with coordinates"
-df.loc[df["Lat"].isna() == True, "Cat_coord"] = "Areas without coordinates"
-df["Cat_loc"] = np.nan
-df.loc[df["City"].isna() == True, "Cat_loc"] = "Projects without location"
-df.loc[df["City"].isna() == False, "Cat_loc"] = "Projects with location"
-
-data_cities.to_csv("geo_data.csv")
-df.to_csv("geo_data_graphs.csv")
+if __name__ == '__main__':
+    app.run_server(debug=True)
